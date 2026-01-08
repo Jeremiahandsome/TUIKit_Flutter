@@ -16,6 +16,27 @@ class _SettingsPageState extends State<SettingsPage> {
   late LoginStore _loginStore;
   late SemanticColorScheme colorsTheme;
 
+  // Translate language options (same as Android SettingsViewModel)
+  static const List<Map<String, String>> _translateLanguageOptions = [
+    {"code": "zh", "name": "简体中文"},
+    {"code": "zh-TW", "name": "繁體中文"},
+    {"code": "en", "name": "English"},
+    {"code": "ja", "name": "日本語"},
+    {"code": "ko", "name": "한국어"},
+    {"code": "fr", "name": "Français"},
+    {"code": "es", "name": "Español"},
+    {"code": "it", "name": "Italiano"},
+    {"code": "de", "name": "Deutsch"},
+    {"code": "tr", "name": "Türkçe"},
+    {"code": "ru", "name": "Русский"},
+    {"code": "pt", "name": "Português"},
+    {"code": "vi", "name": "Tiếng Việt"},
+    {"code": "id", "name": "Bahasa Indonesia"},
+    {"code": "th", "name": "ภาษาไทย"},
+    {"code": "ms", "name": "Bahasa Melayu"},
+    {"code": "hi", "name": "हिन्दी"},
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -165,6 +186,32 @@ class _SettingsPageState extends State<SettingsPage> {
 
       await _loginStore.setSelfInfo(userInfo: updatedProfile);
     }
+  }
+
+  String _getTranslateLanguageDisplayName(String code) {
+    final option = _translateLanguageOptions.firstWhere(
+      (opt) => opt["code"] == code,
+      orElse: () => {"code": code, "name": code},
+    );
+    return option["name"] ?? code;
+  }
+
+  void _showTranslateLanguageSelector(BuildContext context) {
+    final currentLanguage = AppBuilder.getInstance().translateConfig.targetLanguage;
+
+    ActionSheet.show(
+      context,
+      actions: _translateLanguageOptions
+          .map((option) => ActionSheetItem(
+                title: option["name"]!,
+                isDestructive: currentLanguage == option["code"],
+                onTap: () async {
+                  await AppBuilder.getInstance().translateConfig.setTargetLanguage(option["code"]!);
+                  setState(() {});
+                },
+              ))
+          .toList(),
+    );
   }
 
   @override
@@ -372,6 +419,37 @@ class _SettingsPageState extends State<SettingsPage> {
                       title: atomicLocale.language,
                       value: getLocaleName(currentLocale),
                       onTap: showLanguageSelector,
+                    ),
+                    SettingWidgets.buildDivider(context),
+                    SettingWidgets.buildSettingRow(
+                      context: context,
+                      title: atomicLocale.messageReadReceipt,
+                      value: AppBuilder.getInstance().messageListConfig.enableReadReceipt,
+                      onChanged: (value) async {
+                        await AppBuilder.getInstance().messageListConfig.setEnableReadReceipt(value);
+                        setState(() {});
+                      },
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Text(
+                        AppBuilder.getInstance().messageListConfig.enableReadReceipt
+                            ? atomicLocale.messageReadReceiptEnabledDesc
+                            : atomicLocale.messageReadReceiptDisabledDesc,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: themeState.colors.textColorSecondary,
+                        ),
+                      ),
+                    ),
+                    SettingWidgets.buildDivider(context),
+                    SettingWidgets.buildNavigationRow(
+                      context: context,
+                      title: atomicLocale.translateTargetLanguage,
+                      value: _getTranslateLanguageDisplayName(
+                        AppBuilder.getInstance().translateConfig.targetLanguage,
+                      ),
+                      onTap: () => _showTranslateLanguageSelector(context),
                     ),
                   ],
                 ),

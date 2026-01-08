@@ -113,6 +113,12 @@ class ChatPage extends StatefulWidget {
 class _ChatPageState extends State<ChatPage> {
   late SemanticColorScheme colorsTheme;
   late AtomicLocalizations atomicLocale;
+  
+  // Multi-select mode state
+  MultiSelectState? _multiSelectState;
+  
+  // MessageInput key for @ mention feature
+  final GlobalKey<MessageInputState> _messageInputKey = GlobalKey();
 
   @override
   void initState() {
@@ -324,10 +330,30 @@ class _ChatPageState extends State<ChatPage> {
             conversationID: widget.conversation.conversationID,
             locateMessage: widget.message,
             onUserClick: (String userID) => _onUserClick(userID),
+            onUserLongPress: (String userID, String displayName) {
+              _messageInputKey.currentState?.insertMention(
+                userID: userID,
+                displayName: displayName,
+              );
+            },
+            onMultiSelectStateChanged: (state) {
+              setState(() {
+                _multiSelectState = state;
+              });
+            },
           ),
-          MessageInput(
-            conversationID: widget.conversation.conversationID,
-          ),
+          if (_multiSelectState != null && _multiSelectState!.isActive)
+            MultiSelectBottomBar(
+              selectedCount: _multiSelectState!.selectedCount,
+              onCancel: _multiSelectState!.onCancel,
+              onDelete: _multiSelectState!.onDelete,
+              onForward: () => _multiSelectState!.onForward(context),
+            )
+          else
+            MessageInput(
+              key: _messageInputKey,
+              conversationID: widget.conversation.conversationID,
+            ),
         ],
       ),
     );

@@ -1,7 +1,7 @@
+import 'package:flutter/material.dart' hide IconButton;
 import 'package:tuikit_atomic_x/atomicx.dart';
 import 'package:tuikit_atomic_x/contact_list/pages/add_friend.dart';
 import 'package:tuikit_atomic_x/contact_list/pages/add_group.dart';
-import 'package:flutter/material.dart';
 
 import 'chat_page.dart';
 
@@ -9,7 +9,12 @@ const String addFriendMenuString = "addFriend";
 const String addGroupMenuString = "addGroup";
 
 class ContactsPage extends StatelessWidget {
-  const ContactsPage({super.key});
+  final VoidCallback? onBackPressed;
+
+  const ContactsPage({
+    super.key,
+    this.onBackPressed,
+  });
 
   void _onSendMessageClick(BuildContext context, {String? userID, String? groupID}) async {
     ConversationInfo conversation;
@@ -85,15 +90,27 @@ class ContactsPage extends StatelessWidget {
     AtomicLocalizations atomicLocale = AtomicLocalizations.of(context);
     SemanticColorScheme colorsScheme = BaseThemeProvider.colorsOf(context);
     return Scaffold(
+      backgroundColor: colorsScheme.bgColorOperate,
       appBar: AppBar(
         backgroundColor: colorsScheme.bgColorOperate,
-        title: Text(atomicLocale.contact, style: TextStyle(fontSize: 34, fontWeight: FontWeight.w600),),
+        automaticallyImplyLeading: false,
+        leading: onBackPressed != null
+            ? IconButton.buttonContent(
+                content: IconOnlyContent(Icon(Icons.arrow_back_ios, color: colorsScheme.buttonColorPrimaryDefault)),
+                type: ButtonType.noBorder,
+                size: ButtonSize.l,
+                onClick: onBackPressed,
+              )
+            : null,
+        title: Text(atomicLocale.contact,
+            style: TextStyle(fontSize: 34, fontWeight: FontWeight.w600, color: colorsScheme.textColorPrimary)),
         centerTitle: false,
         scrolledUnderElevation: 0,
         actions: [
           PopupMenuButton<String>(
-            icon: const Icon(Icons.add, color: Colors.black),
+            icon: Icon(Icons.add, color: colorsScheme.textColorPrimary),
             offset: const Offset(0, 40),
+            color: colorsScheme.bgColorDialog,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(8),
             ),
@@ -104,9 +121,9 @@ class ContactsPage extends StatelessWidget {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(Icons.person_add),
+                    Icon(Icons.person_add, color: colorsScheme.textColorPrimary),
                     const SizedBox(width: 8),
-                    Text(atomicLocale.addFriend),
+                    Text(atomicLocale.addFriend, style: TextStyle(color: colorsScheme.textColorPrimary)),
                   ],
                 ),
               ),
@@ -116,9 +133,9 @@ class ContactsPage extends StatelessWidget {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(Icons.group_add),
+                    Icon(Icons.group_add, color: colorsScheme.textColorPrimary),
                     const SizedBox(width: 8),
-                    Text(atomicLocale.addGroup),
+                    Text(atomicLocale.addGroup, style: TextStyle(color: colorsScheme.textColorPrimary)),
                   ],
                 ),
               ),

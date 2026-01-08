@@ -43,15 +43,12 @@ dependencies:
 
   flutter_svg: ^2.0.9
   atomic_x_chat:
-    path: ../uikit
+    path: ../uikit/
 
   tencent_calls_uikit:
-    path: ../../call/
-  tencent_cloud_chat_push: ^8.7.7201
+    path: ../../call
+  tencent_cloud_chat_push: ^8.8.7357
 
-dependency_overrides:
-  tuikit_atomic_x:
-    path: ../../atomic-x
 dev_dependencies:
   flutter_test:
     sdk: flutter

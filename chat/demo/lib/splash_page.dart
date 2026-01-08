@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:tencent_calls_uikit/tencent_calls_uikit.dart';
 import 'login_page.dart';
 import 'pages/home_page.dart';
 
