@@ -1,194 +1,268 @@
 package io.trtc.tuikit.atomicx.albumpicker
 
-import android.app.Application
-import android.net.Uri
+import android.content.Intent
+import android.graphics.BitmapFactory
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.os.Handler
 import android.os.Looper
-import android.text.TextUtils
 import android.util.Log
-import android.webkit.MimeTypeMap
+import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
-import io.trtc.tuikit.atomicx.albumpicker.interfaces.AlbumPickerListener
-import io.trtc.tuikit.atomicx.albumpicker.ui.picker.AlbumPickerActivity
-import io.trtc.tuikit.atomicx.basecomponent.theme.ThemeState
+import io.trtc.tuikit.atomicx.albumpicker.*
 import io.trtc.tuikit.atomicx.basecomponent.utils.ContextProvider
 import io.trtc.tuikit.atomicx.messageinput.utils.FileUtils
-import io.trtc.tuikit.atomicx.utils.LocaleUtils
+import io.trtc.tuikit.albumpickercore.api.CompressQuality
 import java.util.concurrent.Executors
 
-/**
- * AlbumPickerHandler
- *
- */
+/// Bridges Flutter method calls to the AlbumPicker AAR library,
+/// and relays listener callbacks back via EventChannel.
 class AlbumPickerHandler(
+    private val flutterAssets: FlutterPlugin.FlutterAssets?,
     private val eventSink: (Map<String, Any>) -> Unit
 ) {
 
     companion object {
         private const val TAG = "AlbumPickerHandler"
+
+        internal var pendingConfig: AlbumPickerConfig? = null
+        internal var pendingTheme: AlbumPickerTheme? = null
+        internal var pendingListener: AlbumPickerListener? = null
+
+        internal fun cleanup() {
+            pendingConfig = null
+            pendingTheme = null
+            pendingListener = null
+        }
     }
 
     private var pendingResult: MethodChannel.Result? = null
-    private var lifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
+    private var sessionId: String? = null
     private val executor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun handlePickMedia(call: MethodCall, result: MethodChannel.Result) {
         Log.d(TAG, "handlePickMedia called")
-
-        if (pendingResult != null) {
-            Log.w(TAG, "AlbumPicker is already active")
-            result.error("ALREADY_ACTIVE", "AlbumPicker is already active", null)
-            return
-        }
+        completePreviousSessionIfNeeded()
 
         try {
             pendingResult = result
+            sessionId = call.argument<String>("sessionId")
 
-            val pickModeInt = call.argument<Int>("pickMode") ?: 1
-            val maxCount = call.argument<Int>("maxCount") ?: 9
-            val gridCount = call.argument<Int>("gridCount") ?: 4
-            val primaryColor = call.argument<String>("primaryColor")
-            val languageCode = call.argument<String>("languageCode")
-            val countryCode = call.argument<String>("countryCode")
-            val scriptCode = call.argument<String>("scriptCode")
+            val config = buildConfig(call)
+            val theme = buildTheme(call)
 
-            Log.d(
-                TAG, "Config - pickMode: $pickModeInt, maxCount: $maxCount, gridCount: $gridCount, "
-                        + "primaryColor: $primaryColor, language: $languageCode"
-            )
+            Log.d(TAG, "Config - style: ${config.style}, mediaFilter: ${config.mediaFilter}, " +
+                    "maxCount: ${config.maxSelectionCount}, gridCount: ${config.itemsPerRow}")
 
-            val pickMode = when (pickModeInt) {
-                0 -> PickMode.IMAGE
-                1 -> PickMode.VIDEO
-                2 -> PickMode.ALL
-                else -> PickMode.ALL
-            }
+            Companion.pendingConfig = config
+            Companion.pendingTheme = theme
+            Companion.pendingListener = createAlbumPickerListener()
 
-            val config = AlbumPickerConfig(
-                pickMode = pickMode,
-                maxCount = maxCount,
-                gridCount = gridCount,
-            )
-
-            if (!primaryColor.isNullOrEmpty()) {
-                ThemeState.shared.setPrimaryColor(primaryColor)
-            }
-
-            if (!languageCode.isNullOrEmpty()) {
-                setupLanguageCallback(languageCode, countryCode, scriptCode)
-            }
-
-            AlbumPicker.pickMedia(config, object : AlbumPickerListener {
-                override fun onFinishedSelect(count: Int) {
-                    Log.d(TAG, "onFinishedSelect: $count items")
-                    
-                    if (count == 0) {
-                        pendingResult?.success(null)
-                        pendingResult = null
-                        cleanupLanguageCallback()
-                    }
-                }
-
-                override fun onProgress(model: AlbumPickerModel, index: Int, progress: Double) {
-                    Log.d(TAG, "onProgress: index=$index, progress=$progress")
-
-                    executor.execute {
-                        try {
-                            val mediaPathUri = model.mediaPath ?: ""
-                            if (mediaPathUri.isEmpty()) {
-                                Log.e(TAG, "model.mediaPath is empty")
-                                return@execute
-                            }
-
-                            val context = ContextProvider.appContext
-                            val uri = Uri.parse(mediaPathUri)
-                            val mediaPath = FileUtils.getPathFromUri(context, uri)
-
-                            if (mediaPath.isEmpty()) {
-                                Log.e(TAG, "Failed to convert URI to path: $mediaPathUri")
-                                return@execute
-                            }
-
-                            Log.d(TAG, "Converted URI to path: $mediaPathUri -> $mediaPath")
-
-                            val fileExtension = FileUtils.getFileExtensionFromUrl(mediaPath)
-                            val fileSize = FileUtils.getFileSize(mediaPath)
-
-                            val mediaTypeValue = when (model.mediaType) {
-                                PickMediaType.IMAGE -> 0
-                                PickMediaType.VIDEO -> 1
-                                PickMediaType.GIF -> 2
-                            }
-
-                            Log.d(TAG, "Processed file: path=$mediaPath, size=$fileSize, type=$mediaTypeValue")
-
-                            val dataMap = mutableMapOf(
-                                "id" to model.id.toLong(),
-                                "mediaType" to mediaTypeValue,
-                                "mediaPath" to mediaPath,
-                                "fileExtension" to fileExtension,
-                                "fileSize" to fileSize,
-                                "isOrigin" to model.isOrigin
-                            )
-
-                            if (mediaTypeValue == 1 && model.videoThumbnailPath != null) {
-                                dataMap["videoThumbnailPath"] = model.videoThumbnailPath
-                            }
-
-                            val progressEvent = mapOf(
-                                "type" to "progress",
-                                "index" to index,
-                                "progress" to progress,
-                                "data" to dataMap
-                            )
-
-                            mainHandler.post {
-                                eventSink(progressEvent)
-                                
-                                if (progress >= 1.0) {
-                                    pendingResult?.success(null)
-                                    pendingResult = null
-                                    cleanupLanguageCallback()
-                                }
-                            }
-
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error processing model: $model", e)
-                        }
-                    }
-                }
-            })
-
+            launchHostActivity()
         } catch (e: Exception) {
             Log.e(TAG, "Error in handlePickMedia", e)
-            pendingResult?.error("ALBUM_PICKER_ERROR", e.message, null)
-            pendingResult = null
-            cleanupLanguageCallback()
+            completeWithError("ALBUM_PICKER_ERROR", e.message)
         }
     }
 
-    private fun setupLanguageCallback(languageCode: String, countryCode: String?, scriptCode: String?) {
-        val application = ContextProvider.appContext as? Application ?: return
-        
-        lifecycleCallbacks = LocaleUtils.registerLanguageCallback(
-            application = application,
-            targetActivityClass = AlbumPickerActivity::class.java,
-            languageCode = languageCode,
-            countryCode = countryCode,
-            scriptCode = scriptCode,
-            onActivityDestroyed = {
-                cleanupLanguageCallback()
+    private fun buildConfig(call: MethodCall): AlbumPickerConfig {
+        val config = AlbumPickerConfig()
+
+        call.argument<Int>("pickMode")?.let {
+            config.mediaFilter = when (it) {
+                0 -> AlbumPickerMediaFilter.IMAGE_ONLY
+                1 -> AlbumPickerMediaFilter.VIDEO_ONLY
+                else -> AlbumPickerMediaFilter.ALL
             }
+        }
+        call.argument<Int>("style")?.let {
+            config.style = if (it == 1) AlbumPickerStyle.LIKE_WHATSAPP else AlbumPickerStyle.LIKE_WECHAT
+        }
+        call.argument<Int>("maxCount")?.let { config.maxSelectionCount = it }
+        call.argument<Int>("gridCount")?.let { config.itemsPerRow = it }
+        call.argument<Boolean>("showsCameraItem")?.let { config.showsCameraItem = it }
+        call.argument<Int>("language")?.let {
+            config.language = when (it) {
+                0 -> AlbumPickerLanguage.SYSTEM
+                1 -> AlbumPickerLanguage.EN
+                2 -> AlbumPickerLanguage.ZH_HANS
+                3 -> AlbumPickerLanguage.ZH_HANT
+                4 -> AlbumPickerLanguage.AR
+                else -> AlbumPickerLanguage.SYSTEM
+            }
+        }
+        call.argument<Int>("compressQuality")?.let {
+            config.compressQuality = if (it == 1) CompressQuality.HIGH else CompressQuality.STANDARD
+        }
+        call.argument<Int>("maxVideoDurationInSeconds")?.let {
+            config.maxVideoDurationInSeconds = it
+        }
+        call.argument<Int>("maxOutputFileSizeInMB")?.let {
+            config.maxOutputFileSizeInMB = it
+        }
+
+        return config
+    }
+
+    private fun buildTheme(call: MethodCall): AlbumPickerTheme {
+        return AlbumPickerTheme(
+            currentPrimaryColor = parseColor(call.argument("primaryColor")),
+            backgroundColor = parseColor(call.argument("backgroundColor")),
+            backgroundColorSecondary = parseColor(call.argument("backgroundColorSecondary")),
+            textColor = parseColor(call.argument("textColor")),
+            textColorSecondary = parseColor(call.argument("textColorSecondary")),
+            confirmButtonIcon = loadFlutterAssetDrawable(call.argument("confirmButtonIconAsset")),
+            bigFontSize = call.argument<Double>("bigFontSize")?.toFloat(),
+            normalFontSize = call.argument<Double>("normalFontSize")?.toFloat(),
+            smallFontSize = call.argument<Double>("smallFontSize")?.toFloat(),
+            bigRadius = call.argument<Double>("bigRadius")?.toInt(),
+            normalRadius = call.argument<Double>("normalRadius")?.toInt(),
+            smallRadius = call.argument<Double>("smallRadius")?.toInt(),
         )
     }
 
-    private fun cleanupLanguageCallback() {
-        val application = ContextProvider.appContext as? Application
-        application?.let {
-            LocaleUtils.unregisterLanguageCallback(it, lifecycleCallbacks)
-            lifecycleCallbacks = null
+    private fun completePreviousSessionIfNeeded() {
+        if (pendingResult == null) return
+        Log.d(TAG, "Completing previous pending result before starting new session")
+        pendingResult?.success(null)
+        pendingResult = null
+        Companion.cleanup()
+    }
+
+    private fun completeSession() {
+        mainHandler.post {
+            pendingResult?.success(null)
+            pendingResult = null
+        }
+    }
+
+    private fun completeWithError(code: String, message: String?) {
+        mainHandler.post {
+            pendingResult?.error(code, message, null)
+            pendingResult = null
+            Companion.cleanup()
+        }
+    }
+
+    private fun launchHostActivity() {
+        val context = ContextProvider.appContext
+        val intent = Intent(context, AlbumPickerHostActivity::class.java)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+    }
+
+    private fun createAlbumPickerListener(): AlbumPickerListener {
+        val capturedSessionId = sessionId
+
+        return object : AlbumPickerListener {
+            override fun onPickConfirm(pickedAlbumMedias: List<AlbumMedia>, textMessage: String?) {
+                Log.d(TAG, "onPickConfirm: ${pickedAlbumMedias.size} items selected")
+
+                AlbumPickerHostActivity.currentInstance?.finish()
+
+                executor.execute {
+                    try {
+                        val event = mutableMapOf<String, Any>(
+                            "type" to "onPickConfirm",
+                            "pickedAlbumMedias" to pickedAlbumMedias.map { buildMediaDataMap(it) },
+                        )
+                        textMessage?.let { event["textMessage"] = it }
+                        capturedSessionId?.let { event["sessionId"] = it }
+                        mainHandler.post { eventSink(event) }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error building onPickConfirm event", e)
+                    }
+                }
+
+                if (pickedAlbumMedias.isEmpty()) {
+                    completeSession()
+                }
+            }
+
+            override fun onMediaProcessing(albumMedia: AlbumMedia, progress: Float, error: Boolean) {
+                if (progress >= 1.0f && !error && albumMedia.mediaPath.isNullOrEmpty()) {
+                    Log.d(TAG, "onMediaProcessing: skipping callback with empty path at progress=1.0")
+                    return
+                }
+
+                executor.execute {
+                    try {
+                        val event = mutableMapOf<String, Any>(
+                            "type" to "onMediaProcessing",
+                            "data" to buildMediaDataMap(albumMedia),
+                            "progress" to progress.toDouble(),
+                            "error" to error,
+                        )
+                        capturedSessionId?.let { event["sessionId"] = it }
+                        mainHandler.post { eventSink(event) }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in onMediaProcessing", e)
+                    }
+                }
+            }
+
+            override fun onMediaProcessed() {
+                Log.d(TAG, "onMediaProcessed")
+                val event = mutableMapOf<String, Any>("type" to "onMediaProcessed")
+                capturedSessionId?.let { event["sessionId"] = it }
+                mainHandler.post { eventSink(event) }
+                completeSession()
+            }
+
+            override fun onCancel() {
+                Log.d(TAG, "onCancel")
+                val event = mutableMapOf<String, Any>("type" to "onCancel")
+                capturedSessionId?.let { event["sessionId"] = it }
+                mainHandler.post { eventSink(event) }
+                AlbumPickerHostActivity.currentInstance?.finish()
+                completeSession()
+            }
+        }
+    }
+
+    private fun buildMediaDataMap(albumMedia: AlbumMedia): Map<String, Any> {
+        val mediaPath = albumMedia.mediaPath ?: ""
+        val mediaTypeInt = if (albumMedia.mediaType == AlbumMediaType.VIDEO) 1 else 0
+
+        val dataMap = mutableMapOf<String, Any>(
+            "id" to albumMedia.id.toLong(),
+            "uri" to (albumMedia.uri?.toString() ?: ""),
+            "mediaType" to mediaTypeInt,
+            "mediaPath" to mediaPath,
+            "fileExtension" to if (mediaPath.isEmpty()) "" else FileUtils.getFileExtensionFromUrl(mediaPath),
+            "fileSize" to if (mediaPath.isEmpty()) 0L else FileUtils.getFileSize(mediaPath),
+            "duration" to albumMedia.duration.toLong(),
+        )
+        albumMedia.videoThumbnailPath?.let { dataMap["videoThumbnailPath"] = it }
+        return dataMap
+    }
+
+    private fun parseColor(colorStr: String?): Int? {
+        if (colorStr.isNullOrEmpty()) return null
+        return try {
+            colorStr.removePrefix("0x").removePrefix("0X").removePrefix("#")
+                .toLong(16).toInt()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse color: $colorStr", e)
+            null
+        }
+    }
+
+    private fun loadFlutterAssetDrawable(assetPath: String?): Drawable? {
+        if (assetPath.isNullOrEmpty() || flutterAssets == null) return null
+        return try {
+            val resolvedPath = flutterAssets.getAssetFilePathByName(assetPath)
+            val context = ContextProvider.appContext
+            context.assets.open(resolvedPath).use { inputStream ->
+                BitmapFactory.decodeStream(inputStream)?.let {
+                    BitmapDrawable(context.resources, it)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load Flutter asset: $assetPath", e)
+            null
         }
     }
 }

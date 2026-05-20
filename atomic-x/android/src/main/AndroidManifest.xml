@@ -17,10 +17,10 @@
 
     <application>
         <activity
-            android:name="io.trtc.tuikit.atomicx.albumpicker.ui.picker.AlbumPickerActivity"
-            android:exported="true"
+            android:name="io.trtc.tuikit.atomicx.albumpicker.AlbumPickerHostActivity"
+            android:exported="false"
             android:screenOrientation="portrait"
-            android:theme="@style/BaseComponent.Theme.FullScreen" />
+            android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
 
         <activity
             android:name="io.trtc.tuikit.atomicx.videorecorder.view.VideoRecorderBridgeActivity"

@@ -1,3 +1,7 @@
+## 4.1.1
+* Replaced with a new custom album picker. 
+* The new picker supports video compression with configurable target file size, provides comprehensive photo library permission handling, and allows UI customization through parameters such as background color and primary color.
+
 ## 4.1.0
 * Added AI subtitles and AI real-time meeting summary features.
 * Optimized the BottomSheet dialog.

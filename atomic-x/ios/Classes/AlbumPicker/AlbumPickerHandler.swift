@@ -1,344 +1,345 @@
 import Flutter
 import UIKit
-import Photos
-import SwiftUI
+import AlbumPicker
 
-/**
- * AlbumPickerHandler
- * 处理 Flutter 层的 AlbumPicker 调用
- */
+/// Bridges Flutter method calls to the AlbumPicker Pod library,
+/// and relays delegate callbacks back via EventChannel.
 class AlbumPickerHandler: NSObject {
-    private weak var viewController: UIViewController?
-    private var pendingResult: FlutterResult?
+    fileprivate weak var registrar: FlutterPluginRegistrar?
+    fileprivate weak var viewController: UIViewController?
     private var eventSink: ((Any) -> Void)?
-    private let languageState = LanguageState()
-    private let themeState = ThemeState()
+    private var pendingResult: FlutterResult?
+    private var delegateProxies: [String: AlbumPickerDelegateProxy] = [:]
 
-    init(viewController: UIViewController?, eventSink: @escaping (Any) -> Void) {
+    init(registrar: FlutterPluginRegistrar?, viewController: UIViewController?, eventSink: @escaping (Any) -> Void) {
+        self.registrar = registrar
         self.viewController = viewController
         self.eventSink = eventSink
         super.init()
     }
-    
+
+    // MARK: - Public Entry
+
     func handlePickMedia(call: FlutterMethodCall, result: @escaping FlutterResult) {
         print("[AlbumPickerHandler] handlePickMedia called")
-        
-        guard pendingResult == nil else {
-            print("[AlbumPickerHandler] AlbumPicker is already active")
-            result(FlutterError(code: "ALREADY_ACTIVE",
-                              message: "AlbumPicker is already active",
-                              details: nil))
-            return
-        }
-        
-        guard let args = call.arguments as? [String: Any] else {
-            result(FlutterError(code: "INVALID_ARGUMENTS",
-                              message: "Invalid arguments",
-                              details: nil))
-            return
-        }
-        
-        pendingResult = result
-        
-        // 解析参数
-        let pickModeInt = args["pickMode"] as? Int ?? 2
-        let maxCount = args["maxCount"] as? Int ?? 9
-        let gridCount = args["gridCount"] as? Int ?? 4
-        let primaryColorHex = args["primaryColor"] as? String
-        let languageCode = args["languageCode"] as? String
-        let countryCode = args["countryCode"] as? String
-        let scriptCode = args["scriptCode"] as? String
-        
-        print("[AlbumPickerHandler] Config - pickMode: \(pickModeInt), maxCount: \(maxCount), gridCount: \(gridCount), primaryColor: \(primaryColorHex ?? "nil"), language: \(languageCode ?? "nil")")
-        
-        // 设置语言
-        if let languageCode = languageCode {
-            setupLanguage(languageCode: languageCode, countryCode: countryCode, scriptCode: scriptCode)
-        }
-        
-        // 转换 pickMode
-        let albumMode: AlbumMode
-        switch pickModeInt {
-        case 0:
-            albumMode = .images
-        case 1:
-            albumMode = .videos
-        case 2:
-            albumMode = .all
-        default:
-            albumMode = .all
-        }
-        
-        // 设置主题色
-        if let primaryColorHex = primaryColorHex, !primaryColorHex.isEmpty {
-            print("[VideoRecorderHandler] Primary color: \(primaryColorHex)")
-            themeState.setPrimaryColor(primaryColorHex)
-        }
-        
-        // 创建配置
-        let config = AlbumPickerConfig(
-            maxImagesCount: maxCount,
-            columnNumber: gridCount,
-            showEditButton: false,
-            showOriginalToggle: false,
-            albumMode: albumMode,
-            primary: primaryColorHex,
-            maxConcurrentTranscodingCount: 3,
-            transcodeQuality: .medium
-        )
-        
-        // 检查权限
-        checkPhotoLibraryPermission { [weak self] granted in
-            guard let self = self else { return }
-            
-            if granted {
-                self.presentAlbumPicker(config: config)
-            } else {
-                showAuthorizationAlert()
-                self.pendingResult?(FlutterError(code: "PERMISSION_DENIED",
-                                                message: "Photo library permission denied",
-                                                details: nil))
-                self.pendingResult = nil
-            }
-        }
-    }
-    
-    private func showAuthorizationAlert() {
-        let title: String = LocalizedAlbumPickerString("no_permission")
-        let message: String = LocalizedAlbumPickerString("no_permission_message")
-        let laterMessage: String = LocalizedAlbumPickerString("cancel")
-        let openSettingMessage: String = LocalizedAlbumPickerString("go_to_settings")
 
-        
-        let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert )
-        alertController.addAction(UIAlertAction(title: laterMessage, style: .cancel, handler:  { action in }))
-        alertController.addAction(UIAlertAction(title: openSettingMessage, style: .default, handler: { action in
-            let app = UIApplication.shared
-            guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-            if app.canOpenURL(url) {
-                if #available(iOS 10.0, *) {
-                    app.open(url)
-                } else {
-                    app.openURL(url)
-                }
+        completePreviousSessionIfNeeded()
+
+        guard let args = call.arguments as? [String: Any] else {
+            result(FlutterError(code: "INVALID_ARGUMENTS", message: "Invalid arguments", details: nil))
+            return
+        }
+
+        pendingResult = result
+
+        let config = buildConfig(from: args)
+        let theme = buildTheme(from: args)
+        let sessionId = args["sessionId"] as? String ?? ""
+
+        print("[AlbumPickerHandler] Config - style: \(config.style),"
+              + " mediaFilter: \(config.mediaFilter),"
+              + " maxCount: \(config.maxSelectionCount ?? 0),"
+              + " gridCount: \(config.itemsPerRow ?? 0),"
+              + " sessionId: \(sessionId)")
+
+        presentAlbumPicker(config: config, theme: theme, sessionId: sessionId)
+    }
+
+    // MARK: - Argument Parsing
+
+    private func buildConfig(from args: [String: Any]) -> AlbumPickerConfig {
+        var config = AlbumPickerConfig()
+
+        if let pickModeInt = args["pickMode"] as? Int {
+            switch pickModeInt {
+            case 0:  config.mediaFilter = .imageOnly
+            case 1:  config.mediaFilter = .videoOnly
+            default: config.mediaFilter = .imageAndVideo
             }
-        }))
-        
+        }
+        if let styleInt = args["style"] as? Int {
+            config.style = (styleInt == 1) ? .likeWhatsApp : .likeWeChat
+        }
+        if let maxCount = args["maxCount"] as? Int {
+            config.maxSelectionCount = maxCount
+        }
+        if let gridCount = args["gridCount"] as? Int {
+            config.itemsPerRow = gridCount
+        }
+        if let showsCameraItem = args["showsCameraItem"] as? Bool {
+            config.showsCameraItem = showsCameraItem
+        }
+        if let language = parseLanguage(args["language"] as? Int) {
+            config.language = language
+        }
+        if let compressQualityInt = args["compressQuality"] as? Int {
+            config.compressQuality = (compressQualityInt == 1) ? .high : .standard
+        }
+        if let maxVideoDuration = args["maxVideoDurationInSeconds"] as? Int {
+            config.maxVideoDurationInSeconds = maxVideoDuration
+        }
+        if let maxOutputFileSize = args["maxOutputFileSizeInMB"] as? Int {
+            config.maxOutputFileSizeInMB = maxOutputFileSize
+        }
+
+        return config
+    }
+
+    private func buildTheme(from args: [String: Any]) -> AlbumPickerTheme {
+        return AlbumPickerTheme(
+            currentPrimaryColor: parseColor(args["primaryColor"] as? String),
+            backgroundColor: parseColor(args["backgroundColor"] as? String),
+            backgroundColorSecondary: parseColor(args["backgroundColorSecondary"] as? String),
+            textColor: parseColor(args["textColor"] as? String),
+            textColorSecondary: parseColor(args["textColorSecondary"] as? String),
+            confirmButtonIcon: loadFlutterAssetImage(args["confirmButtonIconAsset"] as? String),
+            bigFontSize: (args["bigFontSize"] as? Double).map { CGFloat($0) },
+            normalFontSize: (args["normalFontSize"] as? Double).map { CGFloat($0) },
+            smallFontSize: (args["smallFontSize"] as? Double).map { CGFloat($0) },
+            bigRadius: (args["bigRadius"] as? Double).map { CGFloat($0) },
+            normalRadius: (args["normalRadius"] as? Double).map { CGFloat($0) },
+            smallRadius: (args["smallRadius"] as? Double).map { CGFloat($0) }
+        )
+    }
+
+    // MARK: - Presentation
+
+    private func presentAlbumPicker(config: AlbumPickerConfig, theme: AlbumPickerTheme, sessionId: String) {
+        print("[AlbumPickerHandler] presentAlbumPicker sessionId=\(sessionId)")
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            if let window = getAvailableWindow(),
-               let rootVC = window.rootViewController {
-                rootVC.present(alertController, animated: true)
-            }
-        }
-    }
-    
-    private func getAvailableWindow() -> UIWindow? {
-        if #available(iOS 13.0, *) {
-            let allWindows = UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap { $0.windows }
-                .filter { $0.rootViewController != nil }
-            
-            let foregroundKeyWindow = allWindows.first { window in
-                window.isKeyWindow &&
-                (window.windowScene?.activationState == .foregroundActive)
-            }
-            if let window = foregroundKeyWindow { return window }
-            
-            let foregroundWindow = allWindows.first { window in
-                window.windowScene?.activationState == .foregroundActive
-            }
-            if let window = foregroundWindow { return window }
-            
-            let anyKeyWindow = allWindows.first { $0.isKeyWindow }
-            if let window = anyKeyWindow { return window }
-            
-            return allWindows.first
-        } else {
-            return UIApplication.shared.keyWindow?.rootViewController != nil ?
-                   UIApplication.shared.keyWindow :
-                   UIApplication.shared.windows.first { $0.rootViewController != nil }
-        }
-    }
-    
-    private func setupLanguage(languageCode: String, countryCode: String?, scriptCode: String?) {
-        var normalizedLanguage: String
-        
-        if languageCode.hasPrefix("zh") {
-            if let scriptCode = scriptCode, !scriptCode.isEmpty {
-                if scriptCode == "Hans" {
-                    normalizedLanguage = "zh-Hans"
-                } else if scriptCode == "Hant" {
-                    normalizedLanguage = "zh-Hant"
-                } else {
-                    normalizedLanguage = "zh-Hans"
-                }
-            } else {
-                normalizedLanguage = "zh-Hans"
-            }
-        } else if languageCode.hasPrefix("en") {
-            normalizedLanguage = "en"
-        } else if languageCode.hasPrefix("ar") {
-            normalizedLanguage = "ar"
-        } else {
-            normalizedLanguage = "en"
-        }
-        
-        languageState.setLanguage(normalizedLanguage)
-    }
-    
-    private func checkPhotoLibraryPermission(completion: @escaping (Bool) -> Void) {
-        if #available(iOS 14, *) {
-            // Use iOS 14+ API for accurate permission status
-            let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-            switch status {
-            case .authorized, .limited:
-                completion(true)
-            case .notDetermined:
-                PHPhotoLibrary.requestAuthorization(for: .readWrite) { newStatus in
-                    DispatchQueue.main.async {
-                        completion(newStatus == .authorized || newStatus == .limited)
-                    }
-                }
-            case .denied, .restricted:
-                completion(false)
-            @unknown default:
-                completion(false)
-            }
-        } else {
-            // Fallback for iOS 13 and earlier
-            let status = PHPhotoLibrary.authorizationStatus()
-            switch status {
-            case .authorized, .limited:
-                completion(true)
-            case .notDetermined:
-                PHPhotoLibrary.requestAuthorization { newStatus in
-                    DispatchQueue.main.async {
-                        completion(newStatus == .authorized || newStatus == .limited)
-                    }
-                }
-            case .denied, .restricted:
-                completion(false)
-            @unknown default:
-                completion(false)
-            }
-        }
-    }
-    
-    private func presentAlbumPicker(config: AlbumPickerConfig) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self,
-                  let viewController = self.viewController else {
-                self?.pendingResult?(FlutterError(code: "NO_VIEW_CONTROLLER",
-                                                 message: "No view controller available",
-                                                 details: nil))
-                self?.pendingResult = nil
+            guard let self = self, let viewController = self.viewController else {
+                self?.completeWithError(code: "NO_VIEW_CONTROLLER", message: "No view controller available")
                 return
             }
-            
-            let albumPickerView = AlbumPicker(
-                config: config,
-                onFinishedSelect: { [weak self] selectedCount in
-                    self?.handleFinishedSelect(selectedCount: selectedCount)
-                },
-                onProgress: { [weak self] model, index, progress in
-                    self?.handleProgress(model: model, index: index, progress: progress)
-                }
+
+            let albumPickerView = AlbumPickerView()
+
+            // Create a delegate proxy that captures sessionId for this pick session.
+            let proxy = AlbumPickerDelegateProxy(
+                sessionId: sessionId,
+                handler: self
             )
-            
-            let hostingController = UIHostingController(rootView: albumPickerView)
-            hostingController.modalPresentationStyle = .fullScreen
-            
-            viewController.present(hostingController, animated: true)
+            self.delegateProxies[sessionId] = proxy
+            albumPickerView.delegate = proxy
+
+            albumPickerView.initialize(config: config, theme: theme)
+
+            let hostVC = AlbumPickerHostViewController(albumPickerView: albumPickerView)
+            hostVC.modalPresentationStyle = .fullScreen
+            viewController.present(hostVC, animated: true)
         }
     }
-    
-    private func handleFinishedSelect(selectedCount: Int) {
-        print("[AlbumPickerHandler] onFinishedSelect: \(selectedCount) items")
-        
-        // 销毁界面
+
+    // MARK: - Session Lifecycle
+
+    private func completePreviousSessionIfNeeded() {
+        guard let oldResult = pendingResult else { return }
+        print("[AlbumPickerHandler] Completing previous pending result before starting new session")
+        oldResult(nil)
+        pendingResult = nil
+    }
+
+    fileprivate func completeSession(sessionId: String) {
+        delegateProxies.removeValue(forKey: sessionId)
+        let resultToComplete = pendingResult
+        pendingResult = nil
+        DispatchQueue.main.async {
+            resultToComplete?(nil)
+        }
+    }
+
+    private func completeWithError(code: String, message: String) {
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.viewController?.dismiss(animated: true)
-        }
-        
-        if selectedCount == 0 {
-            // 用户取消
-            pendingResult?(nil)
-            pendingResult = nil
+            self?.pendingResult?(FlutterError(code: code, message: message, details: nil))
+            self?.pendingResult = nil
         }
     }
-    
-    private func handleProgress(model: AlbumPickerModel, index: Int, progress: Double) {
-        print("[AlbumPickerHandler] onProgress: index=\(index), progress=\(progress)")
-        
-        // 转换并发送进度事件
-        convertAndSendProgress(model: model, index: index, progress: progress)
-        
-        // 当处理完成时，结束
-        if progress >= 1.0 {
-            pendingResult?(nil)
-            pendingResult = nil
+
+    // MARK: - Event Sending
+
+    fileprivate func sendEvent(_ event: [String: Any]) {
+        DispatchQueue.main.async { [weak self] in
+            self?.eventSink?(event)
         }
     }
-    
-    private func convertAndSendProgress(model: AlbumPickerModel, index: Int, progress: Double) {
-        print("[AlbumPickerHandler] Converting asset at index \(index)")
-        
-        guard let mediaPath = model.mediaPath else {
-            print("[AlbumPickerHandler] mediaPath is nil")
-            return
-        }
-        
-        // 确定类型
-        let mediaType: Int
-        switch model.mediaType {
-        case .image:
-            mediaType = 0
-        case .video:
-            mediaType = 1
-        case .gif:
-            mediaType = 2
-        }
-        
-        // 获取文件扩展名和大小
-        let fileExtension = (mediaPath as NSString).pathExtension.lowercased()
+
+    fileprivate func buildMediaDataDict(albumMedia: AlbumMedia) -> [String: Any] {
+        let mediaPath = albumMedia.mediaPath ?? ""
+        let mediaTypeInt = (albumMedia.mediaType == .video) ? 1 : 0
+        let fileExtension = mediaPath.isEmpty ? "" : (mediaPath as NSString).pathExtension.lowercased()
+
         var fileSize: Int64 = 0
-        if let attributes = try? FileManager.default.attributesOfItem(atPath: mediaPath),
+        if !mediaPath.isEmpty,
+           let attributes = try? FileManager.default.attributesOfItem(atPath: mediaPath),
            let size = attributes[.size] as? Int64 {
             fileSize = size
         }
-        
-        print("[AlbumPickerHandler] Processed file: path=\(mediaPath), size=\(fileSize), type=\(mediaType)")
 
-        // 构建数据字典
-        var dataDict: [String: Any] = [
-            "id": model.id,
-            "mediaType": mediaType,
+        var dict: [String: Any] = [
+            "id": Int(albumMedia.id),
+            "uri": albumMedia.asset?.localIdentifier ?? "",
+            "mediaType": mediaTypeInt,
             "mediaPath": mediaPath,
             "fileExtension": fileExtension,
             "fileSize": fileSize,
-            "isOrigin": model.isOrigin
+            "duration": Int(albumMedia.duration),
         ]
-        
-        // 如果是视频且有缩略图，添加缩略图路径
-        if mediaType == 1, let videoThumbnailPath = model.videoThumbnailPath {
-            dataDict["videoThumbnailPath"] = videoThumbnailPath
-            print("[AlbumPickerHandler] Video thumbnail path: \(videoThumbnailPath)")
+        if mediaTypeInt == 1, let thumbnail = albumMedia.videoThumbnailPath {
+            dict["videoThumbnailPath"] = thumbnail
         }
-        
-        // 发送进度事件
-        let event: [String: Any] = [
-            "type": "progress",
-            "index": index,
-            "progress": progress,
-            "data": dataDict
-        ]
-        
-        eventSink?(event)
+        return dict
     }
 
+    // MARK: - Utilities
 
+    private func parseLanguage(_ value: Int?) -> AlbumPickerLanguage? {
+        guard let value = value else { return nil }
+        switch value {
+        case 0: return .system
+        case 1: return .en
+        case 2: return .zhHans
+        case 3: return .zhHant
+        case 4: return .ar
+        default: return nil
+        }
+    }
+
+    private func parseColor(_ colorStr: String?) -> UIColor? {
+        guard let colorStr = colorStr, !colorStr.isEmpty else { return nil }
+
+        var hex = colorStr
+            .replacingOccurrences(of: "0x", with: "")
+            .replacingOccurrences(of: "0X", with: "")
+            .replacingOccurrences(of: "#", with: "")
+
+        if hex.count == 8 {
+            hex = String(hex.dropFirst(2))
+        }
+
+        guard hex.count == 6, let rgbValue = UInt64(hex, radix: 16) else {
+            print("[AlbumPickerHandler] Failed to parse color: \(colorStr)")
+            return nil
+        }
+
+        return UIColor(
+            red: CGFloat((rgbValue >> 16) & 0xFF) / 255.0,
+            green: CGFloat((rgbValue >> 8) & 0xFF) / 255.0,
+            blue: CGFloat(rgbValue & 0xFF) / 255.0,
+            alpha: 1.0
+        )
+    }
+
+    private func loadFlutterAssetImage(_ assetPath: String?) -> UIImage? {
+        guard let assetPath = assetPath, !assetPath.isEmpty,
+              let registrar = self.registrar else { return nil }
+        let key = registrar.lookupKey(forAsset: assetPath)
+        guard let path = Bundle.main.path(forResource: key, ofType: nil) else { return nil }
+        return UIImage(contentsOfFile: path)
+    }
 }
 
+// MARK: - AlbumPickerDelegateProxy
+
+/// Per-session delegate that captures sessionId and injects it into every event.
+/// This is the iOS equivalent of Android's `val capturedSessionId = sessionId`
+/// closure capture in `createAlbumPickerListener`.
+class AlbumPickerDelegateProxy: NSObject, AlbumPickerDelegate {
+    let sessionId: String
+    private weak var handler: AlbumPickerHandler?
+
+    init(sessionId: String, handler: AlbumPickerHandler) {
+        self.sessionId = sessionId
+        self.handler = handler
+        super.init()
+    }
+
+    func onPickConfirm(pickedAlbumMedias: [AlbumMedia], textMessage: String?) {
+        print("[AlbumPickerHandler] onPickConfirm: \(pickedAlbumMedias.count) items, sessionId=\(sessionId)")
+
+        DispatchQueue.main.async { [weak handler] in
+            handler?.viewController?.dismiss(animated: true)
+        }
+
+        var event: [String: Any] = [
+            "type": "onPickConfirm",
+            "sessionId": sessionId,
+            "pickedAlbumMedias": pickedAlbumMedias.map { handler?.buildMediaDataDict(albumMedia: $0) ?? [:] },
+        ]
+        if let textMessage = textMessage {
+            event["textMessage"] = textMessage
+        }
+        handler?.sendEvent(event)
+
+        if pickedAlbumMedias.isEmpty {
+            handler?.completeSession(sessionId: sessionId)
+        }
+    }
+
+    func onMediaProcessing(albumMedia: AlbumMedia, progress: Float, error: Bool) {
+        print("[AlbumPickerHandler] onMediaProcessing:"
+              + " progress=\(progress),"
+              + " error=\(error),"
+              + " path=\(albumMedia.mediaPath ?? "nil"),"
+              + " sessionId=\(sessionId)")
+
+        handler?.sendEvent([
+            "type": "onMediaProcessing",
+            "sessionId": sessionId,
+            "data": handler?.buildMediaDataDict(albumMedia: albumMedia) ?? [:],
+            "progress": Double(progress),
+            "error": error,
+        ])
+    }
+
+    func onMediaProcessed() {
+        print("[AlbumPickerHandler] onMediaProcessed, sessionId=\(sessionId)")
+
+        handler?.sendEvent([
+            "type": "onMediaProcessed",
+            "sessionId": sessionId,
+        ])
+
+        handler?.completeSession(sessionId: sessionId)
+    }
+
+    func onCancel() {
+        print("[AlbumPickerHandler] onCancel, sessionId=\(sessionId)")
+        handler?.sendEvent([
+            "type": "onCancel",
+            "sessionId": sessionId,
+        ])
+
+        DispatchQueue.main.async { [weak handler] in
+            handler?.viewController?.dismiss(animated: true)
+        }
+        handler?.completeSession(sessionId: sessionId)
+    }
+}
+
+// MARK: - AlbumPickerHostViewController
+
+private class AlbumPickerHostViewController: UIViewController {
+    private let albumPickerView: AlbumPickerView
+
+    init(albumPickerView: AlbumPickerView) {
+        self.albumPickerView = albumPickerView
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        view.addSubview(albumPickerView)
+        albumPickerView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            albumPickerView.topAnchor.constraint(equalTo: view.topAnchor),
+            albumPickerView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            albumPickerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            albumPickerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+    }
+}

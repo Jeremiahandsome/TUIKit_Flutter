@@ -2,10 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:atomic_x_core/atomicxcore.dart';
+import 'package:atomic_x_core/impl/message/message_input_store_impl.dart';
+import 'package:atomic_x_core/impl/message/message_list_store_impl.dart';
+import 'package:atomic_x_core/impl/message/message_action_store_impl.dart';
 import 'package:flutter/material.dart' hide IconButton;
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:provider/provider.dart';
 import 'package:tuikit_atomic_x/album_picker/album_picker.dart';
+import 'package:tuikit_atomic_x/message_input/album_picker_media_send_manager.dart';
 import 'package:tuikit_atomic_x/audio_recoder/audio_recorder.dart';
 import 'package:tuikit_atomic_x/base_component/base_component.dart' hide AlertDialog;
 import 'package:tuikit_atomic_x/emoji_picker/emoji_manager.dart';
@@ -83,12 +87,19 @@ class MessageInputState extends State<MessageInput> with TickerProviderStateMixi
 
   // Conversation info for offline push
   ConversationInfo? _conversationInfo;
+  
+  late final _AlbumPickerMediaSendListenerImpl _albumPickerListener;
 
   @override
   void initState() {
     super.initState();
     _messageInputStore = MessageInputStore.create(conversationID: widget.conversationID);
     _conversationListStore = ConversationListStore.create();
+    _albumPickerListener = _AlbumPickerMediaSendListenerImpl(this);
+    AlbumPickerMediaSendManager.shared.restorePlaceholders(
+      conversationID: widget.conversationID,
+      listener: _albumPickerListener,
+    );
     _textEditingController = _MentionTextEditingController();
     _textEditingController.addListener(_onTextChanged);
     _textEditingFocusNode.addListener(_onFocusChanged);
@@ -533,42 +544,57 @@ class MessageInputState extends State<MessageInput> with TickerProviderStateMixi
       debugPrint("_handleSendTextMessage, errorCode:${result.errorCode}, errorMessage:${result.errorMessage}");
     }
   }
-
+  
   void _onPickAlbum() async {
-    AlbumPickerConfig config = const AlbumPickerConfig();
-    await AlbumPicker.pickMedia(
-      context: context,
-      config: config,
-      onProgress: (model, index, progress) async {
-        if (progress >= 1.0) {
-          if (model.mediaType == PickMediaType.image) {
-            final messageInfo = MessageInfo();
-            messageInfo.messageType = MessageType.image;
-            MessageBody messageBody = MessageBody();
-            messageBody.originalImagePath = model.mediaPath;
-            messageInfo.messageBody = messageBody;
-            final result = await _sendMessage(messageInfo);
-            if (!result.isSuccess) {
-              debugPrint("_onPickAlbum image, errorCode:${result.errorCode}, errorMessage:${result.errorMessage}");
-            }
-          } else if (model.mediaType == PickMediaType.video) {
-            String? snapshotPath = model.videoThumbnailPath;
+    final themeState = BaseThemeProvider.of(context);
+    final locale = localeProvider.locale;
 
-            final messageInfo = MessageInfo();
-            messageInfo.messageType = MessageType.video;
-            MessageBody messageBody = MessageBody();
-            messageBody.videoPath = model.mediaPath;
-            messageBody.videoSnapshotPath = snapshotPath;
-            messageBody.videoType = model.fileExtension;
-            messageInfo.messageBody = messageBody;
-            final result = await _sendMessage(messageInfo);
-            if (!result.isSuccess) {
-              debugPrint("_onPickAlbum video, errorCode:${result.errorCode}, errorMessage:${result.errorMessage}");
-            }
-          }
-        }
-      },
+    AlbumPickerConfig config = AlbumPickerConfig(
+      mediaFilter: AlbumPickerMediaFilter.imageAndVideo,
+      maxSelectionCount: 9,
+      itemsPerRow: 3,
+      showsCameraItem: false,
+      style: AlbumPickerStyle.likeWeChat,
+      language: _localeToAlbumPickerLanguage(locale),
     );
+
+    AlbumPickerTheme theme = AlbumPickerTheme(
+      primaryColor: themeState.hasCustomPrimaryColor
+          ? _hexToColor(themeState.currentPrimaryColor)
+          : null,
+    );
+
+    try {
+      await AlbumPickerMediaSendManager.shared.pickAlbumMedia(
+        conversationID: widget.conversationID,
+        listener: _albumPickerListener,
+        config: config,
+        theme: theme,
+      );
+    } catch (e) {
+      debugPrint("_onPickAlbum error: $e");
+    }
+  }
+
+  Color? _hexToColor(String? hex) {
+    if (hex == null || hex.isEmpty) return null;
+    final cleaned = hex.replaceFirst('#', '');
+    if (cleaned.length != 6) return null;
+    final value = int.tryParse(cleaned, radix: 16);
+    if (value == null) return null;
+    return Color(0xFF000000 | value);
+  }
+
+  AlbumPickerLanguage _localeToAlbumPickerLanguage(Locale? locale) {
+    if (locale == null) return AlbumPickerLanguage.system;
+    if (locale.languageCode == 'zh') {
+      return (locale.scriptCode == 'Hant')
+          ? AlbumPickerLanguage.zhHant
+          : AlbumPickerLanguage.zhHans;
+    }
+    if (locale.languageCode == 'ar') return AlbumPickerLanguage.ar;
+    if (locale.languageCode == 'en') return AlbumPickerLanguage.en;
+    return AlbumPickerLanguage.system;
   }
 
   Future<CompletionHandler> _sendMessage(MessageInfo messageInfo) async {
@@ -584,6 +610,23 @@ class MessageInputState extends State<MessageInput> with TickerProviderStateMixi
 
     return result;
   }
+
+  void _sendPlaceholderMessage(MessageInfo placeholder) {
+    notificationCenter.post(
+      MessageSendNotifyKey.messageSendBegin,
+      MessageSendEventData(conversationID: widget.conversationID, message: placeholder),
+    );
+  }
+
+  void _removePlaceholderMessage(MessageInfo placeholder) {
+    if (placeholder.msgID != null) {
+      notificationCenter.post(
+        MessageActionNotifyKey.messageDelete,
+        MessageDeleteEventData(messageIDList: [placeholder.msgID!]),
+      );
+    }
+  }
+
 
   // ==================== Offline Push Info ====================
 
@@ -1706,4 +1749,31 @@ class _MorePanelItem {
     required this.title,
     required this.onTap,
   });
+}
+
+// MARK: - AlbumPickerMediaSendListener Implementation
+
+class _AlbumPickerMediaSendListenerImpl implements AlbumPickerMediaSendListener {
+  final MessageInputState _state;
+
+  _AlbumPickerMediaSendListenerImpl(this._state);
+
+  @override
+  void onSendMessage(MessageInfo messageInfo) {
+    _state._sendMessage(messageInfo).then((result) {
+      if (!result.isSuccess) {
+        debugPrint("AlbumPicker onSendMessage failed: ${result.errorCode}, ${result.errorMessage}");
+      }
+    });
+  }
+
+  @override
+  void onSendPlaceholderMessage(MessageInfo placeholder) {
+    _state._sendPlaceholderMessage(placeholder);
+  }
+
+  @override
+  void onRemovePlaceholderMessage(MessageInfo placeholder) {
+    _state._removePlaceholderMessage(placeholder);
+  }
 }

@@ -10,9 +10,8 @@ import io.flutter.plugin.common.MethodChannel.Result
 /**
  * AtomicAlbumPickerPlugin module
  *
- * AtomicAlbumPickerPlugin acts as an intermediary layer between AtomicXPlugin and AlbumPickerHandler, managing MethodChannels and EventChannels.
- *
- * Note: This is distinct from Android Compose's AlbumPicker; this class is specifically designed for the Flutter Plugin layer.
+ * Intermediary layer between AtomicXPlugin and AlbumPickerHandler,
+ * managing MethodChannels and EventChannels for the Flutter Plugin layer.
  */
 class AtomicAlbumPickerPlugin(
     private val pluginBinding: FlutterPlugin.FlutterPluginBinding
@@ -26,14 +25,14 @@ class AtomicAlbumPickerPlugin(
     private var methodChannel: MethodChannel? = null
     private var eventChannel: EventChannel? = null
     private var eventSink: EventChannel.EventSink? = null
-    private val albumPickerHandler = AlbumPickerHandler { event ->
+    private val albumPickerHandler = AlbumPickerHandler(pluginBinding.flutterAssets) { event ->
         eventSink?.success(event)
     }
 
     init {
         methodChannel = MethodChannel(pluginBinding.binaryMessenger, METHOD_CHANNEL_NAME)
         methodChannel?.setMethodCallHandler(this)
-        
+
         eventChannel = EventChannel(pluginBinding.binaryMessenger, EVENT_CHANNEL_NAME)
         eventChannel?.setStreamHandler(this)
     }
@@ -52,12 +51,10 @@ class AtomicAlbumPickerPlugin(
 
     // EventChannel.StreamHandler
     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-        android.util.Log.d("AtomicAlbumPickerPlugin", "EventChannel onListen")
         eventSink = events
     }
 
     override fun onCancel(arguments: Any?) {
-        android.util.Log.d("AtomicAlbumPickerPlugin", "EventChannel onCancel")
         eventSink = null
     }
 

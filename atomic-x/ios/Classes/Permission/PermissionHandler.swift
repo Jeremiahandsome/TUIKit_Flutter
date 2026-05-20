@@ -112,6 +112,13 @@ class PermissionHandler {
   // MARK: - Photos Permission
 
   private func getPhotosPermissionStatus() -> String {
+    // Guard: if NSPhotoLibraryUsageDescription is missing, report denied to avoid potential crash.
+    let plistValue = Bundle.main.object(forInfoDictionaryKey: "NSPhotoLibraryUsageDescription")
+    if plistValue == nil || (plistValue as? String)?.isEmpty == true {
+      print("[PermissionHandler] ERROR: NSPhotoLibraryUsageDescription is missing or empty in Info.plist. Returning denied.")
+      return "denied"
+    }
+
     if #available(iOS 14, *) {
       let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
       switch status {
@@ -146,6 +153,15 @@ class PermissionHandler {
   }
 
   private func requestPhotosPermission(result: @escaping FlutterResult) {
+    // Guard: NSPhotoLibraryUsageDescription must exist in Info.plist,
+    // otherwise PHPhotoLibrary.requestAuthorization will crash.
+    let plistValue = Bundle.main.object(forInfoDictionaryKey: "NSPhotoLibraryUsageDescription")
+    if plistValue == nil || (plistValue as? String)?.isEmpty == true {
+      print("[PermissionHandler] ERROR: NSPhotoLibraryUsageDescription is missing or empty in Info.plist. Returning denied to avoid crash.")
+      result("denied")
+      return
+    }
+
     if #available(iOS 14, *) {
       PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
         DispatchQueue.main.async {

@@ -1,13 +1,7 @@
 import Flutter
 import UIKit
+import AlbumPicker
 
-/**
- * AtomicAlbumPickerPlugin
- * 
- * AtomicAlbumPickerPlugin 作为 AtomicXPlugin 和 AlbumPickerHandler 之间的中间层，管理 MethodChannel 和 EventChannel
- * 
- * 注意：这与 iOS SwiftUI 的 AlbumPicker 不同；此类专门为 Flutter Plugin 层设计
- */
 class AtomicAlbumPickerPlugin: NSObject, FlutterStreamHandler {
     private static let channelName = "atomic_x/album_picker"
     private static let eventChannelName = "atomic_x/album_picker_events"
@@ -32,7 +26,8 @@ class AtomicAlbumPickerPlugin: NSObject, FlutterStreamHandler {
         
         eventChannel?.setStreamHandler(self)
         
-        albumPickerHandler = AlbumPickerHandler(viewController: viewController, eventSink: { [weak self] event in
+        albumPickerHandler = AlbumPickerHandler(registrar: registrar, viewController: viewController,
+         eventSink: { [weak self] event in
             self?.eventSink?(event)
         })
         
@@ -40,7 +35,7 @@ class AtomicAlbumPickerPlugin: NSObject, FlutterStreamHandler {
             self?.handleMethodCall(call, result: result)
         }
     }
-    
+
     // MARK: - FlutterStreamHandler
     
     func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
